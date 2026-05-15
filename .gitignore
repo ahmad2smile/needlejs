@@ -1,0 +1,9 @@
+node_modules/
+dist/
+models/*.onnx
+models/tokenizer/*.model
+models/tokenizer/*.vocab
+*.pkl
+__pycache__/
+*.pyc
+.env

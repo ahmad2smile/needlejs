@@ -1,0 +1,34 @@
+{
+  "manifest_version": 3,
+  "name": "Needle Tool Calling",
+  "version": "0.1.0",
+  "description": "On-device AI tool calling via the Needle model (onnxruntime-web)",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://huggingface.co/*",
+    "https://cdn-lfs.huggingface.co/*",
+    "https://huggingface.co/Cactus-Compute/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "ort-wasm/*.wasm",
+        "ort-wasm/*.mjs",
+        "models/*.onnx",
+        "models/tokenizer/needle.model"
+      ],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "Needle Tool Calling"
+  }
+}

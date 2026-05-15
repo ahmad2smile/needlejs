@@ -1,0 +1,10 @@
+jax[cpu]>=0.4.25
+flax>=0.8.0
+torch>=2.2.0
+onnxscript>=0.1.0
+onnx>=1.16.0
+onnxruntime>=1.18.0
+onnxconverter-common>=1.13.0
+huggingface-hub>=0.22.0
+sentencepiece>=0.2.0
+numpy>=1.26.0
