@@ -1,8 +1,8 @@
 # NeedleJS
 
-Run the [Cactus Compute Needle](https://github.com/cactus-compute/needle) tool-calling model in a Chrome extension — no Python, no server, no dependencies at runtime.
+Run the [Cactus Compute Needle](https://github.com/cactus-compute/needle) tool-calling model from JavaScript — no Python, no server, no model hosting. The ONNX weights and SentencePiece tokenizer ship inside this package, so `npm install needlejs` is everything you need.
 
-Needle is a 26M-parameter encoder-decoder transformer that takes a natural language query and a list of tool definitions and returns a JSON tool call. NeedleJS ports it to [onnxruntime-web](https://github.com/microsoft/onnxruntime) so it runs entirely in WebAssembly inside the browser.
+Needle is a 26M-parameter encoder-decoder transformer that takes a natural-language query and a list of tool definitions and returns a JSON tool call. NeedleJS ports it to [onnxruntime-web](https://github.com/microsoft/onnxruntime) (which runs in both Node and the browser via WebAssembly).
 
 ## How it works
 
@@ -20,7 +20,7 @@ User query + tools JSON
     + ConstrainedDecoder   (trie + JSON state machine keeps output valid)
          │
          ▼
-  {"name":"tool_name","arguments":{...}}
+  [{"name":"tool_name","arguments":{...}}]
 ```
 
 ## Quickstart
@@ -29,12 +29,7 @@ User query + tools JSON
 import { Needle } from 'needlejs';
 
 const needle = new Needle();
-await needle.load({
-  encoderUrl: 'https://your-cdn.example.com/needle_encoder_fp16.onnx',
-  decoderUrl: 'https://your-cdn.example.com/needle_decoder_fp16.onnx',
-  tokenizerUrl: 'https://your-cdn.example.com/tokenizer/needle.model',
-  wasmDir: 'https://your-cdn.example.com/ort-wasm/',
-});
+await needle.load();  // uses bundled model files
 
 const tools = [{
   name: 'get_weather',
@@ -45,15 +40,55 @@ const tools = [{
 }];
 
 const result = await needle.generate('What is the weather in San Francisco?', tools);
-// '{"name":"get_weather","arguments":{"location":"San Francisco"}}'
+// '[{"name":"get_weather","arguments":{"location":"San Francisco"}}]'
 ```
 
-## Generating the ONNX model files
+`load()` resolves the bundled model files relative to the installed package and reads them from disk. Pass `encoderPath`, `decoderPath`, `tokenizerPath`, or `vocabPath` to override.
 
-The ONNX files are not included in this repo. Run the export script once on any machine that has Python and a GPU (or CPU):
+## JavaScript API
+
+### `Needle` (high-level facade)
+
+```js
+import { Needle } from 'needlejs';
+
+const needle = new Needle();
+
+// Load using bundled files (default), or override any subset:
+await needle.load({
+  // encoderPath, decoderPath, tokenizerPath, vocabPath
+  // useWebGPU: true,  // try the WebGPU EP first, fall back to wasm
+});
+
+const json = await needle.generate(query, tools, {
+  maxGenLen: 256,    // max tokens to generate
+  maxEncLen: 1024,   // max encoder input length
+  constrained: true, // enable JSON-constrained decoding
+  onToken: (piece) => process.stdout.write(piece), // streaming callback
+});
+```
+
+### `NeedleModel` + `NeedleTokenizer` (low-level)
+
+```js
+import { NeedleModel, NeedleTokenizer, generate, bundledModelPaths } from 'needlejs';
+
+const { encoderPath, decoderPath, tokenizerPath, vocabPath } = bundledModelPaths();
+
+const model = new NeedleModel();
+await model.loadFromPaths(encoderPath, decoderPath);
+
+const tokenizer = await NeedleTokenizer.fromPath(tokenizerPath, vocabPath);
+
+const result = await generate(model, tokenizer, query, tools);
+```
+
+## Regenerating the ONNX model files
+
+The model files are pre-built and shipped with the package. To regenerate them (e.g. after a Needle upstream release):
 
 ```bash
-# Install Python dependencies
+# Install Python deps
 pip install -r scripts/requirements_export.txt
 pip install git+https://github.com/cactus-compute/needle
 
@@ -61,14 +96,15 @@ pip install git+https://github.com/cactus-compute/needle
 python scripts/export_onnx.py --fp16 --validate --output-dir models/
 ```
 
-This produces:
+This writes to:
 
 ```
 models/
-├── needle_encoder_fp16.onnx   (~15 MB)
-├── needle_decoder_fp16.onnx   (~37 MB)
+├── needle_encoder_fp16.onnx   (~28 MB)
+├── needle_decoder_fp16.onnx   (~43 MB)
 └── tokenizer/
-    └── needle.model
+    ├── needle.model
+    └── needle.vocab
 ```
 
 `--validate` runs onnxruntime against the PyTorch reference and asserts the max absolute difference is under 0.05 (fp16 tolerance). `--fp16` halves model size with negligible accuracy loss.
@@ -82,81 +118,12 @@ models/
 | `--validate` | off | Validate output against PyTorch |
 | `--checkpoint` | (HuggingFace) | Path to a local `checkpoint.pkl` |
 
-## JavaScript API
-
-### `Needle` (high-level facade)
-
-```js
-import { Needle } from 'needlejs';
-
-const needle = new Needle();
-
-// Load all components at once
-await needle.load({ encoderUrl, decoderUrl, tokenizerUrl, wasmDir, useWebGPU });
-
-// Generate a tool call
-const json = await needle.generate(query, tools, {
-  maxGenLen: 256,    // max tokens to generate
-  maxEncLen: 1024,   // max encoder input length
-  constrained: true, // enable JSON-constrained decoding
-  onToken: (piece) => process.stdout.write(piece), // streaming callback
-});
-```
-
-### `NeedleModel` + `NeedleTokenizer` (low-level)
-
-```js
-import { NeedleModel, NeedleTokenizer, generate, configureOrtWasm } from 'needlejs';
-
-configureOrtWasm('/ort-wasm/');
-
-const model = new NeedleModel();
-await model.loadFromUrls(encoderUrl, decoderUrl);
-
-const tokenizer = await NeedleTokenizer.fromUrl(tokenizerUrl);
-
-const result = await generate(model, tokenizer, query, tools);
-```
-
-## Chrome Extension
-
-The `extension/` directory is a ready-to-build Chrome Manifest V3 extension.
-
-### Build
-
-```bash
-npm install
-npm run build:extension   # outputs to dist/extension/
-```
-
-Load the `dist/extension/` folder in Chrome via `chrome://extensions` → *Load unpacked*.
-
-### How it works
-
-The extension's service worker (`extension/background.js`) lazily loads the ONNX models from the [Cache API](https://developer.mozilla.org/en-US/docs/Web/API/Cache) on first use. Models are fetched from the HuggingFace Hub if not bundled locally and cached for subsequent uses. Content scripts and the popup communicate with the service worker via `chrome.runtime.sendMessage`:
-
-```js
-// From any content script or popup:
-chrome.runtime.sendMessage({
-  type: 'NEEDLE_GENERATE',
-  query: 'Book a flight to Tokyo',
-  tools: JSON.stringify(myTools),
-}, (response) => {
-  if (response.success) console.log(response.result);
-});
-```
-
-### Bundling models locally
-
-Copy the ONNX files into `models/` before building. The extension build copies them into `dist/extension/models/`. This avoids the first-run download at the cost of a larger extension package (~52 MB fp16).
-
 ## Development
 
 ```bash
-npm install          # install JS dependencies
-npm test             # run unit tests (25 tests)
-npm run build        # build ESM + UMD library
-npm run build:extension  # build Chrome extension bundle
+npm install
+npm test       # runs unit tests + end-to-end against the bundled models
+npm run build  # build ESM + UMD library bundles to dist/
 ```
 
 ### Project layout
@@ -172,14 +139,11 @@ needlejs/
 │   ├── model.js                # onnxruntime-web encoder/decoder sessions
 │   ├── generator.js            # Autoregressive generation loop
 │   └── index.js                # Public API + Needle facade
-├── extension/
-│   ├── manifest.json           # Chrome Manifest V3
-│   ├── background.js           # Service worker
-│   └── popup/                  # Extension popup UI
 ├── test/
-│   ├── constrained.test.js     # Trie, JsonStateMachine, logit masking
-│   └── tokenizer.test.js       # snake_case conversion, tool normalization
-└── models/                     # ONNX files go here (gitignored)
+│   ├── constrained.test.ts     # Trie, JsonStateMachine, logit masking
+│   ├── tokenizer.test.ts       # snake_case conversion, tool normalization
+│   └── needle.test.ts          # End-to-end against bundled models
+└── models/                     # ONNX + tokenizer files shipped with the package
 ```
 
 ## Technical notes
@@ -193,11 +157,8 @@ Needle uses 8 query heads and 4 KV heads. The JS model wrapper repeats K/V tenso
 **Constrained decoding**
 The decoder is constrained to only produce valid JSON matching the provided tool schema. A character-level trie over tool names and parameter keys, combined with a JSON state machine that tracks buffer context, masks invalid tokens to `-Infinity` before each argmax. This is a direct port of `needle/model/constrained.py`.
 
-**Chrome extension + WASM**
-WASM execution in Manifest V3 service workers requires `'wasm-unsafe-eval'` in the extension's content security policy. ORT WASM files must be listed in `web_accessible_resources` and their path communicated to onnxruntime-web via `ort.env.wasm.wasmPaths` before any session is created.
-
-**Service worker lifetime**
-Chrome terminates MV3 service workers after ~30 seconds of inactivity. The model sessions are re-initialized from the Cache API on the next incoming message (typically 2–5 seconds).
+**Vocab table source**
+The WASM build of `sentencepiece-js` doesn't expose `GetPieceSize` / `IdToPiece`, so constrained decoding reads the companion `needle.vocab` file (shipped alongside `needle.model`) to build its token-string table.
 
 ## License
 

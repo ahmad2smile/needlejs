@@ -1,9 +1,9 @@
 /**
  * Needle tokenizer: SentencePiece BPE wrapper.
  *
- * Loads the needle.model file and provides encode/decode.
- * Falls back to a pure-JS BPE implementation if sentencepiece-js
- * is unavailable (e.g. service worker environment issues with app-root-path).
+ * Wraps sentencepiece-js for encode/decode and parses the companion .vocab
+ * file so we can expose vocabSize / idToPiece (the WASM build of
+ * sentencepiece-js does not surface those methods).
  */
 
 export const PAD_ID = 0;
@@ -58,7 +58,6 @@ export function restoreToolNames(text, nameMap) {
     };
     return JSON.stringify(fix(obj));
   } catch {
-    // Fallback: string replacement, longest first
     for (const [snake, orig] of Object.entries(nameMap).sort((a, b) => b[0].length - a[0].length)) {
       text = text.replaceAll(snake, orig);
     }
@@ -66,44 +65,54 @@ export function restoreToolNames(text, nameMap) {
   }
 }
 
+/** Parse a SentencePiece .vocab file (tab-separated piece<TAB>score) into pieces[]. */
+function parseVocab(text) {
+  return text.split('\n').filter((line) => line.length > 0).map((line) => {
+    const tab = line.indexOf('\t');
+    return tab === -1 ? line : line.slice(0, tab);
+  });
+}
+
 /**
- * NeedleTokenizer wraps a SentencePiece model loaded from an ArrayBuffer.
+ * NeedleTokenizer wraps a SentencePiece model file and its companion vocab.
  *
- * Usage:
- *   const tokenizer = await NeedleTokenizer.fromBuffer(modelBuffer);
+ * Usage (Node):
+ *   const tokenizer = await NeedleTokenizer.fromPath('/path/to/needle.model');
  *   const ids = tokenizer.encode("hello world");
  *   const text = tokenizer.decode(ids);
  */
 export class NeedleTokenizer {
-  constructor(sp) {
+  constructor(sp, pieces) {
     this._sp = sp;
+    this._pieces = pieces;
   }
 
-  /** Load tokenizer from an ArrayBuffer (the .model file bytes). */
-  static async fromBuffer(buffer) {
-    // Dynamic import so bundlers can tree-shake if not used
+  /**
+   * Load tokenizer from a file path. Looks for the companion .vocab in the same
+   * directory if vocabPath isn't given (e.g. needle.model → needle.vocab).
+   */
+  static async fromPath(modelPath, vocabPath = null) {
     const { SentencePieceProcessor } = await import('sentencepiece-js');
     const sp = new SentencePieceProcessor();
-    await sp.loadFromBinaryArray(new Uint8Array(buffer));
-    return new NeedleTokenizer(sp);
+    await sp.load(modelPath);
+
+    if (!vocabPath) vocabPath = modelPath.replace(/\.model$/, '.vocab');
+    const { readFileSync } = await import('fs');
+    const pieces = parseVocab(readFileSync(vocabPath, 'utf-8'));
+    return new NeedleTokenizer(sp, pieces);
   }
 
-  /** Load tokenizer from a URL (fetches the .model file). */
-  static async fromUrl(url) {
-    const resp = await fetch(url);
-    if (!resp.ok) throw new Error(`Failed to fetch tokenizer: ${url} (${resp.status})`);
-    const buf = await resp.arrayBuffer();
-    return NeedleTokenizer.fromBuffer(buf);
-  }
+  get vocabSize() { return this._pieces.length; }
 
-  get vocabSize() { return this._sp.vocabSize(); }
+  /** Return the piece string for vocab id i (e.g. '▁hello', '<0x41>', '<pad>'). */
+  idToPiece(i) { return this._pieces[i] ?? ''; }
 
   encode(text) {
     return this._sp.encodeIds(text);
   }
 
   decode(ids) {
-    return this._sp.decode(ids);
+    return this._sp.decodeIds(ids);
   }
 
   /**

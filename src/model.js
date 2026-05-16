@@ -1,15 +1,17 @@
 /**
- * ONNX model sessions for Needle encoder and decoder.
- * Uses onnxruntime-web (WASM backend).
+ * ONNX encoder + decoder sessions for Needle.
+ *
+ * Uses onnxruntime-web (WASM backend) which works in both Node and the browser.
  */
 
 import * as ort from 'onnxruntime-web';
 
 /**
- * Configure onnxruntime-web WASM paths.
- * Must be called before creating any InferenceSession.
+ * Configure onnxruntime-web WASM paths. Only needed in the browser when the
+ * WASM files aren't served from the same origin as the loader; in Node it
+ * isn't required.
  *
- * @param {string} wasmDir - URL to directory containing ort-wasm*.wasm files
+ * @param {string} wasmDir - URL/path to directory containing ort-wasm*.wasm files
  */
 export function configureOrtWasm(wasmDir) {
   if (!wasmDir.endsWith('/')) wasmDir += '/';
@@ -31,10 +33,7 @@ export class NeedleModel {
   }
 
   /**
-   * Load encoder and decoder from ArrayBuffers.
-   * @param {ArrayBuffer} encoderData
-   * @param {ArrayBuffer} decoderData
-   * @param {{ useWebGPU?: boolean }} opts
+   * Load encoder and decoder from ArrayBuffers / Uint8Arrays.
    */
   async loadFromBuffers(encoderData, decoderData, opts = {}) {
     [this._encoder, this._decoder] = await Promise.all([
@@ -44,16 +43,18 @@ export class NeedleModel {
   }
 
   /**
-   * Load encoder and decoder from URLs.
-   * @param {string} encoderUrl
-   * @param {string} decoderUrl
-   * @param {{ useWebGPU?: boolean }} opts
+   * Load encoder and decoder from filesystem paths (Node).
+   */
+  async loadFromPaths(encoderPath, decoderPath, opts = {}) {
+    const { readFileSync } = await import('fs');
+    return this.loadFromBuffers(readFileSync(encoderPath), readFileSync(decoderPath), opts);
+  }
+
+  /**
+   * Load encoder and decoder from URLs (browser).
    */
   async loadFromUrls(encoderUrl, decoderUrl, opts = {}) {
-    const [encResp, decResp] = await Promise.all([
-      fetch(encoderUrl),
-      fetch(decoderUrl),
-    ]);
+    const [encResp, decResp] = await Promise.all([fetch(encoderUrl), fetch(decoderUrl)]);
     if (!encResp.ok) throw new Error(`Failed to fetch encoder: ${encoderUrl} (${encResp.status})`);
     if (!decResp.ok) throw new Error(`Failed to fetch decoder: ${decoderUrl} (${decResp.status})`);
     const [encBuf, decBuf] = await Promise.all([encResp.arrayBuffer(), decResp.arrayBuffer()]);
@@ -88,7 +89,6 @@ export class NeedleModel {
     return out.logits;
   }
 
-  /** Returns true if both sessions are loaded. */
   get isLoaded() {
     return this._encoder !== null && this._decoder !== null;
   }

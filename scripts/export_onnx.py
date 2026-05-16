@@ -29,10 +29,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
 # ---------------------------------------------------------------------------
 # PyTorch re-implementation of Needle
 # ---------------------------------------------------------------------------
+
 
 def precompute_rope(head_dim: int, max_seq_len: int, theta: float = 10000.0):
     """Returns (cos, sin) each shape [max_seq_len, head_dim//2]."""
@@ -61,8 +61,8 @@ class ZCRMSNorm(nn.Module):
         self.scale = nn.Parameter(torch.zeros(d_model))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        rms = x.float().pow(2).mean(dim=-1, keepdim=True).add(self.eps).sqrt()
-        return ((1.0 + self.scale) * x / rms.to(x.dtype))
+        rms = x.pow(2).mean(dim=-1, keepdim=True).add(self.eps).sqrt()
+        return (1.0 + self.scale) * x / rms
 
 
 class MultiHeadAttention(nn.Module):
@@ -91,9 +91,21 @@ class MultiHeadAttention(nn.Module):
         apply_rope_to_q: bool = True,
     ) -> torch.Tensor:
         B = q_input.shape[0]
-        q = self.q_proj(q_input).reshape(B, -1, self.num_heads, self.head_dim).transpose(1, 2)
-        k = self.k_proj(kv_input).reshape(B, -1, self.num_kv_heads, self.head_dim).transpose(1, 2)
-        v = self.v_proj(kv_input).reshape(B, -1, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        q = (
+            self.q_proj(q_input)
+            .reshape(B, -1, self.num_heads, self.head_dim)
+            .transpose(1, 2)
+        )
+        k = (
+            self.k_proj(kv_input)
+            .reshape(B, -1, self.num_kv_heads, self.head_dim)
+            .transpose(1, 2)
+        )
+        v = (
+            self.v_proj(kv_input)
+            .reshape(B, -1, self.num_kv_heads, self.head_dim)
+            .transpose(1, 2)
+        )
 
         q = self.q_norm(q)
         k = self.k_norm(k)
@@ -116,7 +128,7 @@ class MultiHeadAttention(nn.Module):
             # mask: True = attend, False = block; set blocked to -inf
             attn = attn.masked_fill(~mask, float("-inf"))
 
-        attn = F.softmax(attn.float(), dim=-1).to(q.dtype)
+        attn = F.softmax(attn, dim=-1)
         out = torch.matmul(attn, v)
         out = out.transpose(1, 2).reshape(B, -1, self.num_heads * self.head_dim)
         return self.out_proj(out)
@@ -143,8 +155,15 @@ class FeedForward(nn.Module):
 
 
 class EncoderBlock(nn.Module):
-    def __init__(self, d_model: int, num_heads: int, num_kv_heads: int,
-                 d_ff: int, activation: str, no_feedforward: bool):
+    def __init__(
+        self,
+        d_model: int,
+        num_heads: int,
+        num_kv_heads: int,
+        d_ff: int,
+        activation: str,
+        no_feedforward: bool,
+    ):
         super().__init__()
         self.no_feedforward = no_feedforward
         self.attn_gate = nn.Parameter(torch.zeros(1))
@@ -172,14 +191,27 @@ class EncoderBlock(nn.Module):
 
 
 class Encoder(nn.Module):
-    def __init__(self, d_model: int, num_heads: int, num_kv_heads: int,
-                 d_ff: int, num_layers: int, activation: str,
-                 no_feedforward: bool, max_seq_len: int, rope_theta: float):
+    def __init__(
+        self,
+        d_model: int,
+        num_heads: int,
+        num_kv_heads: int,
+        d_ff: int,
+        num_layers: int,
+        activation: str,
+        no_feedforward: bool,
+        max_seq_len: int,
+        rope_theta: float,
+    ):
         super().__init__()
-        self.layers = nn.ModuleList([
-            EncoderBlock(d_model, num_heads, num_kv_heads, d_ff, activation, no_feedforward)
-            for _ in range(num_layers)
-        ])
+        self.layers = nn.ModuleList(
+            [
+                EncoderBlock(
+                    d_model, num_heads, num_kv_heads, d_ff, activation, no_feedforward
+                )
+                for _ in range(num_layers)
+            ]
+        )
         self.final_norm = ZCRMSNorm(d_model)
         cos, sin = precompute_rope(d_model // num_heads, max_seq_len, rope_theta)
         self.register_buffer("rope_cos", cos)
@@ -193,8 +225,15 @@ class Encoder(nn.Module):
 
 
 class DecoderBlock(nn.Module):
-    def __init__(self, d_model: int, num_heads: int, num_kv_heads: int,
-                 d_ff: int, activation: str, no_feedforward: bool):
+    def __init__(
+        self,
+        d_model: int,
+        num_heads: int,
+        num_kv_heads: int,
+        d_ff: int,
+        activation: str,
+        no_feedforward: bool,
+    ):
         super().__init__()
         self.no_feedforward = no_feedforward
         self.self_attn_gate = nn.Parameter(torch.zeros(1))
@@ -208,8 +247,14 @@ class DecoderBlock(nn.Module):
             self.norm3 = ZCRMSNorm(d_model)
             self.ffn = FeedForward(d_model, d_ff, activation)
 
-    def forward(self, x: torch.Tensor, encoder_out: torch.Tensor,
-                self_mask=None, cross_mask=None, rope=None) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        encoder_out: torch.Tensor,
+        self_mask=None,
+        cross_mask=None,
+        rope=None,
+    ) -> torch.Tensor:
         self_gate = torch.sigmoid(self.self_attn_gate)
         residual = x
         x = self.norm1(x)
@@ -234,44 +279,82 @@ class DecoderBlock(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self, d_model: int, num_heads: int, num_kv_heads: int,
-                 d_ff: int, num_layers: int, activation: str,
-                 no_feedforward: bool, max_seq_len: int, rope_theta: float):
+    def __init__(
+        self,
+        d_model: int,
+        num_heads: int,
+        num_kv_heads: int,
+        d_ff: int,
+        num_layers: int,
+        activation: str,
+        no_feedforward: bool,
+        max_seq_len: int,
+        rope_theta: float,
+    ):
         super().__init__()
-        self.layers = nn.ModuleList([
-            DecoderBlock(d_model, num_heads, num_kv_heads, d_ff, activation, no_feedforward)
-            for _ in range(num_layers)
-        ])
+        self.layers = nn.ModuleList(
+            [
+                DecoderBlock(
+                    d_model, num_heads, num_kv_heads, d_ff, activation, no_feedforward
+                )
+                for _ in range(num_layers)
+            ]
+        )
         self.final_norm = ZCRMSNorm(d_model)
         cos, sin = precompute_rope(d_model // num_heads, max_seq_len, rope_theta)
         self.register_buffer("rope_cos", cos)
         self.register_buffer("rope_sin", sin)
 
-    def forward(self, x: torch.Tensor, encoder_out: torch.Tensor,
-                self_mask=None, cross_mask=None) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        encoder_out: torch.Tensor,
+        self_mask=None,
+        cross_mask=None,
+    ) -> torch.Tensor:
         rope = (self.rope_cos, self.rope_sin)
         for layer in self.layers:
-            x = layer(x, encoder_out, self_mask=self_mask, cross_mask=cross_mask, rope=rope)
+            x = layer(
+                x, encoder_out, self_mask=self_mask, cross_mask=cross_mask, rope=rope
+            )
         return self.final_norm(x)
 
 
 class NeedleEncoderONNX(nn.Module):
     """Encoder-only wrapper: input_ids -> hidden_states."""
 
-    def __init__(self, vocab_size, d_model, num_heads, num_kv_heads,
-                 d_ff, num_enc_layers, activation, no_feedforward,
-                 max_seq_len, rope_theta):
+    def __init__(
+        self,
+        vocab_size,
+        d_model,
+        num_heads,
+        num_kv_heads,
+        d_ff,
+        num_enc_layers,
+        activation,
+        no_feedforward,
+        max_seq_len,
+        rope_theta,
+    ):
         super().__init__()
         self.embed_scale = math.sqrt(d_model)
         self.embedding = nn.Embedding(vocab_size, d_model)
-        self.encoder = Encoder(d_model, num_heads, num_kv_heads, d_ff,
-                               num_enc_layers, activation, no_feedforward,
-                               max_seq_len, rope_theta)
+        self.encoder = Encoder(
+            d_model,
+            num_heads,
+            num_kv_heads,
+            d_ff,
+            num_enc_layers,
+            activation,
+            no_feedforward,
+            max_seq_len,
+            rope_theta,
+        )
 
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
         # input_ids: [B, enc_len] int32
         # Build padding mask: True = attend, False = ignore (pad=0)
-        pad_mask = (input_ids != 0)  # [B, enc_len]
+        pad_mask = input_ids != 0  # [B, enc_len]
         # Expand to [B, 1, 1, enc_len] for self-attention
         mask = pad_mask.unsqueeze(1).unsqueeze(2)
         x = self.embedding(input_ids.long()) * self.embed_scale
@@ -281,31 +364,53 @@ class NeedleEncoderONNX(nn.Module):
 class NeedleDecoderONNX(nn.Module):
     """Decoder-only wrapper: (decoder_input_ids, encoder_hidden_states) -> logits."""
 
-    def __init__(self, vocab_size, d_model, num_heads, num_kv_heads,
-                 d_ff, num_dec_layers, activation, no_feedforward,
-                 max_seq_len, rope_theta, embedding_weight: torch.Tensor):
+    def __init__(
+        self,
+        vocab_size,
+        d_model,
+        num_heads,
+        num_kv_heads,
+        d_ff,
+        num_dec_layers,
+        activation,
+        no_feedforward,
+        max_seq_len,
+        rope_theta,
+        embedding_weight: torch.Tensor,
+    ):
         super().__init__()
         self.embed_scale = math.sqrt(d_model)
         self.embedding = nn.Embedding(vocab_size, d_model)
         self.embedding.weight = nn.Parameter(embedding_weight, requires_grad=False)
-        self.decoder = Decoder(d_model, num_heads, num_kv_heads, d_ff,
-                               num_dec_layers, activation, no_feedforward,
-                               max_seq_len, rope_theta)
+        self.decoder = Decoder(
+            d_model,
+            num_heads,
+            num_kv_heads,
+            d_ff,
+            num_dec_layers,
+            activation,
+            no_feedforward,
+            max_seq_len,
+            rope_theta,
+        )
 
-    def forward(self, decoder_input_ids: torch.Tensor,
-                encoder_hidden_states: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, decoder_input_ids: torch.Tensor, encoder_hidden_states: torch.Tensor
+    ) -> torch.Tensor:
         # decoder_input_ids: [B, dec_len] int32
         # encoder_hidden_states: [B, enc_len, d_model]
         B, dec_len = decoder_input_ids.shape
         # Causal mask for self-attention: [1, 1, dec_len, dec_len]
-        causal = torch.tril(torch.ones(dec_len, dec_len,
-                                       device=decoder_input_ids.device, dtype=torch.bool))
+        causal = torch.tril(
+            torch.ones(
+                dec_len, dec_len, device=decoder_input_ids.device, dtype=torch.bool
+            )
+        )
         self_mask = causal.unsqueeze(0).unsqueeze(0)
 
         x = self.embedding(decoder_input_ids.long()) * self.embed_scale
-        x = self.decoder(x, encoder_hidden_states,
-                         self_mask=self_mask, cross_mask=None)
-        logits = x.float() @ self.embedding.weight.float().T
+        x = self.decoder(x, encoder_hidden_states, self_mask=self_mask, cross_mask=None)
+        logits = x @ self.embedding.weight.T
         return logits  # [B, dec_len, vocab_size]
 
 
@@ -313,16 +418,18 @@ class NeedleDecoderONNX(nn.Module):
 # Weight loading
 # ---------------------------------------------------------------------------
 
+
 def load_jax_params(checkpoint_path: str):
     """Load JAX pickle checkpoint. Returns (params dict as float32 numpy, config dict)."""
     import jax
+
     with open(checkpoint_path, "rb") as f:
         data = pickle.load(f)
     # Convert all leaves to float32 numpy immediately — JAX DeviceArrays can't
     # be pickled across processes and bfloat16 isn't supported by PyTorch directly.
     params = jax.tree.map(lambda x: np.array(x, dtype=np.float32), data["params"])
     config = data.get("config", {})
-    if hasattr(config, '__dataclass_fields__'):
+    if hasattr(config, "__dataclass_fields__"):
         # TransformerConfig object — convert to dict
         config = {k: getattr(config, k) for k in config.__dataclass_fields__}
     return params, config
@@ -405,9 +512,18 @@ def build_encoder_from_params(params: dict, cfg: dict) -> NeedleEncoderONNX:
     max_seq_len = cfg.get("max_seq_len", 8192)
     rope_theta = cfg.get("rope_theta", 10000.0)
 
-    model = NeedleEncoderONNX(vocab_size, d_model, num_heads, num_kv_heads,
-                               d_ff, num_enc_layers, activation, no_feedforward,
-                               max_seq_len, rope_theta)
+    model = NeedleEncoderONNX(
+        vocab_size,
+        d_model,
+        num_heads,
+        num_kv_heads,
+        d_ff,
+        num_enc_layers,
+        activation,
+        no_feedforward,
+        max_seq_len,
+        rope_theta,
+    )
 
     # Embeddings
     model.embedding.weight.data = _t(params["embedding"]["embedding"])
@@ -421,8 +537,9 @@ def build_encoder_from_params(params: dict, cfg: dict) -> NeedleEncoderONNX:
     return model
 
 
-def build_decoder_from_params(params: dict, cfg: dict,
-                               shared_embedding: torch.Tensor) -> NeedleDecoderONNX:
+def build_decoder_from_params(
+    params: dict, cfg: dict, shared_embedding: torch.Tensor
+) -> NeedleDecoderONNX:
     vocab_size = cfg.get("vocab_size", 8192)
     d_model = cfg.get("d_model", 512)
     num_heads = cfg.get("num_heads", 8)
@@ -434,9 +551,19 @@ def build_decoder_from_params(params: dict, cfg: dict,
     max_seq_len = cfg.get("max_seq_len", 8192)
     rope_theta = cfg.get("rope_theta", 10000.0)
 
-    model = NeedleDecoderONNX(vocab_size, d_model, num_heads, num_kv_heads,
-                               d_ff, num_dec_layers, activation, no_feedforward,
-                               max_seq_len, rope_theta, shared_embedding)
+    model = NeedleDecoderONNX(
+        vocab_size,
+        d_model,
+        num_heads,
+        num_kv_heads,
+        d_ff,
+        num_dec_layers,
+        activation,
+        no_feedforward,
+        max_seq_len,
+        rope_theta,
+        shared_embedding,
+    )
 
     dec_layers_p = params["decoder"]["layers"]["DecoderBlock_0"]
     for i, layer in enumerate(model.decoder.layers):
@@ -450,20 +577,27 @@ def build_decoder_from_params(params: dict, cfg: dict,
 # Validation
 # ---------------------------------------------------------------------------
 
-def validate_with_onnxruntime(onnx_path: str, pt_model: nn.Module,
-                               *dummy_inputs) -> float:
+
+def validate_with_onnxruntime(
+    onnx_path: str, pt_model: nn.Module, *dummy_inputs
+) -> float:
     """Run ONNX and PyTorch on same inputs; return max absolute difference."""
     import onnxruntime as ort
+
     sess = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
-    input_names = [inp.name for inp in sess.get_inputs()]
+    sess_inputs = sess.get_inputs()
+    type_map = {
+        "tensor(float16)": np.float16,
+        "tensor(float)": np.float32,
+        "tensor(int32)": np.int32,
+        "tensor(int64)": np.int64,
+    }
 
     ort_inputs = {}
-    for name, inp in zip(input_names, dummy_inputs):
+    for sess_inp, inp in zip(sess_inputs, dummy_inputs):
         arr = inp.numpy()
-        if arr.dtype == np.int32:
-            ort_inputs[name] = arr
-        else:
-            ort_inputs[name] = arr.astype(np.float32)
+        target = type_map.get(sess_inp.type, np.float32)
+        ort_inputs[sess_inp.name] = arr.astype(target)
 
     ort_out = sess.run(None, ort_inputs)[0]
 
@@ -478,6 +612,7 @@ def validate_with_onnxruntime(onnx_path: str, pt_model: nn.Module,
 # Main export
 # ---------------------------------------------------------------------------
 
+
 def export(args):
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -485,9 +620,10 @@ def export(args):
     # --- Download checkpoint ---
     print("Downloading checkpoint from HuggingFace Hub...")
     from huggingface_hub import hf_hub_download
+
     ckpt_path = hf_hub_download(
         repo_id="Cactus-Compute/needle",
-        filename="checkpoint.pkl",
+        filename="needle.pkl",
         repo_type="model",
     )
     print(f"Checkpoint: {ckpt_path}")
@@ -498,7 +634,9 @@ def export(args):
     print(f"Config: {cfg}")
 
     # Print param tree to verify structure
-    import jax, jax.numpy as jnp
+    import jax
+    import jax.numpy as jnp
+
     flat = jax.tree_util.tree_map(lambda x: np.array(x).shape, params)
     print("\nParam tree (first 40 entries):")
     leaves = list(jax.tree_util.tree_leaves_with_path(flat))[:40]
@@ -571,15 +709,18 @@ def export(args):
     if args.fp16:
         print("Converting to float16...")
         import onnx
+        from onnx import shape_inference
         from onnxconverter_common import float16
 
         enc_model_f32 = onnx.load(str(enc_path_f32))
         enc_fp16 = float16.convert_float_to_float16(enc_model_f32, keep_io_types=False)
+        enc_fp16 = shape_inference.infer_shapes(enc_fp16)
         onnx.save(enc_fp16, str(enc_path))
         os.remove(enc_path_f32)
 
         dec_model_f32 = onnx.load(str(dec_path_f32))
         dec_fp16 = float16.convert_float_to_float16(dec_model_f32, keep_io_types=False)
+        dec_fp16 = shape_inference.infer_shapes(dec_fp16)
         onnx.save(dec_fp16, str(dec_path))
         os.remove(dec_path_f32)
     else:
@@ -600,8 +741,9 @@ def export(args):
         with torch.no_grad():
             dummy_enc_out = encoder(dummy_enc_ids)
         print("Validating decoder...")
-        dec_diff = validate_with_onnxruntime(str(dec_path), decoder,
-                                              dummy_dec_ids, dummy_enc_out)
+        dec_diff = validate_with_onnxruntime(
+            str(dec_path), decoder, dummy_dec_ids, dummy_enc_out
+        )
         print(f"  Decoder max abs diff: {dec_diff:.6f}")
 
         tol = 0.05 if args.fp16 else 1e-3
@@ -631,14 +773,24 @@ def export(args):
 
 def main():
     parser = argparse.ArgumentParser(description="Export Needle model to ONNX")
-    parser.add_argument("--output-dir", default="../models",
-                        help="Directory for output files (default: ../models)")
-    parser.add_argument("--fp16", action="store_true",
-                        help="Convert to float16 after export (smaller, faster)")
-    parser.add_argument("--validate", action="store_true",
-                        help="Validate ONNX output against PyTorch")
-    parser.add_argument("--checkpoint", default=None,
-                        help="Path to local checkpoint.pkl (skips HF download)")
+    parser.add_argument(
+        "--output-dir",
+        default="../models",
+        help="Directory for output files (default: ../models)",
+    )
+    parser.add_argument(
+        "--fp16",
+        action="store_true",
+        help="Convert to float16 after export (smaller, faster)",
+    )
+    parser.add_argument(
+        "--validate", action="store_true", help="Validate ONNX output against PyTorch"
+    )
+    parser.add_argument(
+        "--checkpoint",
+        default=None,
+        help="Path to local needle.pkl (skips HF download)",
+    )
     args = parser.parse_args()
     export(args)
 

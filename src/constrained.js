@@ -211,9 +211,8 @@ export function buildTokenStrings(tokenizer) {
   const vocabSize = tokenizer.vocabSize;
   const strings = new Array(vocabSize).fill('');
   for (let i = 0; i < vocabSize; i++) {
-    // sentencepiece-js exposes idToPiece
     try {
-      const piece = tokenizer._sp.idToPiece(i);
+      const piece = tokenizer.idToPiece(i);
       if (!piece) continue;
       // Replace ▁ with space; skip control/byte tokens
       if (piece.startsWith('<') && piece.endsWith('>')) {
