@@ -1,5 +1,7 @@
 # NeedleJS
 
+NOTE: Its a AI generated port of [Cactus Compute Needle](https://github.com/cactus-compute/needle) but has no relation with original publisher.
+
 Run the [Cactus Compute Needle](https://github.com/cactus-compute/needle) tool-calling model from JavaScript — no Python, no server, no model hosting. The ONNX weights and SentencePiece tokenizer ship inside this package, so `npm install needlejs` is everything you need.
 
 Needle is a 26M-parameter encoder-decoder transformer that takes a natural-language query and a list of tool definitions and returns a JSON tool call. NeedleJS ports it to [onnxruntime-web](https://github.com/microsoft/onnxruntime) (which runs in both Node and the browser via WebAssembly).
