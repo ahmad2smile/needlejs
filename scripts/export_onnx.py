@@ -483,14 +483,18 @@ def export(args):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # --- Download checkpoint ---
-    print("Downloading checkpoint from HuggingFace Hub...")
     from huggingface_hub import hf_hub_download
-    ckpt_path = hf_hub_download(
-        repo_id="Cactus-Compute/needle",
-        filename="checkpoint.pkl",
-        repo_type="model",
-    )
-    print(f"Checkpoint: {ckpt_path}")
+    if args.checkpoint:
+        ckpt_path = args.checkpoint
+        print(f"Using local checkpoint: {ckpt_path}")
+    else:
+        print("Downloading checkpoint from HuggingFace Hub...")
+        ckpt_path = hf_hub_download(
+            repo_id="Cactus-Compute/needle",
+            filename="needle.pkl",
+            repo_type="model",
+        )
+        print(f"Checkpoint: {ckpt_path}")
 
     # --- Load params ---
     print("Loading checkpoint...")
